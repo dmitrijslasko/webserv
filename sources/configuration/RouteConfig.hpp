@@ -1,0 +1,57 @@
+#ifndef ROUTECONFIG_HPP
+#define ROUTECONFIG_HPP
+
+#include <map>
+#include <set>
+#include <vector>
+
+#include "configuration/CgiHandlerConfig.hpp"
+#include "configuration/FolderConfig.hpp"
+#include "configuration/UploadConfig.hpp"
+#include "http_methods/HttpMethodType.hpp"
+#include "http_status/HttpStatus.hpp"
+
+namespace webserver {
+class RouteConfig {
+private:
+    std::string _path;
+    std::set<HttpMethodType> _allowedMethods;
+    bool _isRedirection;
+    std::string _redirectTo;
+    FolderConfig _folderConfigSection;
+    UploadConfig _uploadConfigSection;
+    std::map<std::string, CgiHandlerConfig*> _cgiHandlers;  // NOTE: extension:config
+    bool compareCgiHandlers(const RouteConfig& other) const;
+    HttpStatus _statusCatalogue;
+    // NOTE: yes, this is a duplicate from Endpoint, I spent too much time trying to optimize this
+
+public:
+    RouteConfig();
+    RouteConfig& operator=(const RouteConfig& other);
+    RouteConfig(const RouteConfig& other);
+    ~RouteConfig();
+
+    const FolderConfig& getFolderConfig() const;
+
+    bool operator==(const RouteConfig& other) const;
+    bool operator<(const RouteConfig& other) const;
+    bool isMethodAllowed(HttpMethodType method) const;
+    RouteConfig& addAllowedMethod(HttpMethodType method);
+    RouteConfig& setRedirection(const std::string& redirectTo);
+    bool isRedirection() const;
+    const std::string& getRedirection() const;
+    RouteConfig& setFolderConfig(const FolderConfig& folder);
+    const UploadConfig& getUploadConfigSection() const;
+    RouteConfig& setUploadConfig(const UploadConfig& upload);
+    RouteConfig& setPath(std::string path);
+    RouteConfig& addCgiHandler(const CgiHandlerConfig& cfg, std::string extension);
+    std::string getPath() const;
+    const std::map<std::string, CgiHandlerConfig*>& getCgiHandlers() const;
+    const HttpStatus& getStatusCatalogue() const;
+    RouteConfig& setStatusCatalogue(const HttpStatus& statusCatalogue);
+    const std::string& getStatusPageFileLocation(HttpStatus::CODE code) const;
+    friend std::ostream& operator<<(std::ostream& oss, const RouteConfig& route);
+};
+}  // namespace webserver
+
+#endif

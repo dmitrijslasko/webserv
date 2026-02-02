@@ -1,0 +1,16 @@
+/webserv
+build
+.vscode
+*.txt
+test
+*.pyc
+cxxtest
+*.tst
+.fuse_hidden*
+/testRoot
+.DS_Store
+tests/e2e/webserv/tools/webserv
+tests/e2e/webserv/tools/status_pages
+tests/e2e/**/results*.json
+*.log
+*.log.*

@@ -1,0 +1,330 @@
+#include <cctype>
+#include <cerrno>
+#include <cstring>
+#include <string>
+
+#include "configuration/CgiHandlerConfig.hpp"
+#include "configuration/Endpoint.hpp"
+#include "configuration/FolderConfig.hpp"
+#include "configuration/RouteConfig.hpp"
+#include "configuration/UploadConfig.hpp"
+#include "configuration/parser/ConfigParser.hpp"
+#include "configuration/parser/ConfigParsingException.hpp"
+#include "http_methods/HttpMethodType.hpp"
+#include "logger/Logger.hpp"
+
+using std::string;
+
+namespace webserver {
+void ConfigParser::setupLocationUpload(RouteConfig& route) {
+    if (_tmp.uploadSet()) {
+        const UploadConfig upload(_tmp.uploadEnabled(), _tmp.uploadRoot());
+        route.setUploadConfig(upload);
+    }
+}
+
+void ConfigParser::setupLocationFolder(
+    const string& locationPath,
+    const Endpoint& server,
+    RouteConfig& route
+) {
+    Logger log;
+    log.stream(LOG_TRACE) << "\n{{" << _tmp.rootSet() << " " << _tmp.rootPath() << " "
+                          << server.getRoot() << "}}\n";
+    const FolderConfig folder(
+        locationPath,
+        _tmp.rootSet() ? _tmp.rootPath() : server.getRoot(),
+        _tmp.autoindexSet() ? _tmp.autoindex() : false,
+        _tmp.indexSet() ? _tmp.indexPage() : "",
+        _tmp.maxBodySizeBytesSet() ? _tmp.getMaxBodySizeBytes() : server.getMaxClientBodySizeBytes()
+    );
+    route.setFolderConfig(folder);
+}
+
+void ConfigParser::checkIfBodySizeSetAndParse(bool& bodySizeSet) {
+    if (bodySizeSet) {
+        throw ConfigParsingException(
+            "Duplicate 'client_max_body_size' directive (only one allowed per scope)"
+        );
+    }
+    parseLocationMaxBodySize();
+    bodySizeSet = true;
+}
+
+void ConfigParser::parseLocation(Endpoint& server) {
+    Logger log;
+    _index++;
+    bool bodySizeSet = false;
+
+    if (isEnd(_tokens, _index) || _tokens[_index] == ";" || _tokens[_index] == "{") {
+        throw ConfigParsingException("Expected path after 'location'");
+    }
+
+    string locationPath = _tokens[_index];
+    if (locationPath.at(0) != '/') {
+        throw ConfigParsingException("Location path must start with '/'");
+    }
+    if (locationPath.at(locationPath.size() - 1) == '/' && locationPath.size() > 1) {
+        locationPath = locationPath.substr(0, locationPath.size() - 1);
+    }
+    _tmp.clear();
+    _index++;
+
+    if (isEnd(_tokens, _index) || _tokens[_index] != "{") {
+        throw ConfigParsingException("Expected '{' after location path '" + locationPath + "'");
+    }
+    _index++;
+    if (_tokens[_index] == "}") {
+        throw ConfigParsingException("Empty block");
+    }
+    RouteConfig route;
+
+    while (!isEnd(_tokens, _index)) {
+        const string& token = _tokens[_index];
+
+        if (token == "root") {
+            parseLocationRoot();
+        } else if (token == "client_max_body_size") {
+            checkIfBodySizeSetAndParse(bodySizeSet);
+        } else if (token == "autoindex") {
+            parseLocationAutoindex();
+        } else if (token == "index") {
+            parseLocationIndex();
+        } else if (token == "methods") {
+            parseLocationMethods(route);
+        } else if (token == "limit_except") {
+            parseLocationLimitExcept(route);
+        } else if (token == "return") {
+            parseLocationReturn(route);
+        } else if (token == "upload") {
+            parseLocationUpload();
+        } else if (token == "cgi") {
+            parseLocationCgi(route);
+        } else if (token != "}") {
+            throw ConfigParsingException("Unexpected token in location block: " + token);
+        } else {
+            _index++;
+            break;
+        }
+    }
+
+    if (isEnd(_tokens, _index) && (_tokens[_index - 1] != "}")) {
+        throw ConfigParsingException("Unexpected end of file in location block (missing '}')");
+    }
+
+    route.setPath(locationPath);
+
+    log.stream(LOG_TRACE) << "setupLocationFolder " << locationPath << " [" << server << "] {"
+                          << route << "}\n";
+    setupLocationFolder(locationPath, server, route);
+
+    setupLocationUpload(route);
+
+    server.addRoute(route);
+}
+
+void ConfigParser::parseLocationMaxBodySize() {
+    _index++;
+    if (isEnd(_tokens, _index)) {
+        throw ConfigParsingException("Expected value after 'client_max_body_size'");
+    }
+
+    const string value = _tokens[_index];
+    _index++;
+
+    if (isEnd(_tokens, _index) || _tokens[_index] != ";") {
+        throw ConfigParsingException("Missing ';' after client_max_body_size");
+    }
+
+    _index++;
+
+    const size_t size = parseSizeValue(value);
+    _tmp.setMaxClientBodySizeBytes(size);
+}
+
+void ConfigParser::parseLocationRoot() {
+    _index++;
+
+    if (isEnd(_tokens, _index) || _tokens[_index] == ";") {
+        throw ConfigParsingException("Expected path after 'root' in location");
+    }
+
+    _tmp.setRootPath(_tokens[_index]);
+    _index++;
+
+    if (isEnd(_tokens, _index) || _tokens[_index] != ";") {
+        throw ConfigParsingException("Missing ';' after root");
+    }
+
+    _index++;
+}
+
+void ConfigParser::parseLocationAutoindex() {
+    _index++;
+
+    if (isEnd(_tokens, _index) || _tokens[_index] == ";") {
+        throw ConfigParsingException("Expected 'on' or 'off' after autoindex");
+    }
+
+    const std::string val = _tokens[_index++];
+
+    if (val == "on") {
+        _tmp.setAutoindex(true);
+    } else if (val == "off") {
+        _tmp.setAutoindex(false);
+    } else {
+        throw ConfigParsingException("autoindex must be on/off");
+    }
+
+    if (isEnd(_tokens, _index) || _tokens[_index] != ";") {
+        throw ConfigParsingException("Missing ';' after autoindex");
+    }
+
+    _index++;
+}
+
+void ConfigParser::parseLocationIndex() {
+    _index++;
+
+    if (isEnd(_tokens, _index) || _tokens[_index] == ";") {
+        throw ConfigParsingException("Expected filename after index");
+    }
+
+    _tmp.setIndexPage(_tokens[_index]);
+
+    _index++;
+
+    if (isEnd(_tokens, _index) || _tokens[_index] != ";") {
+        throw ConfigParsingException("Missing ';' after index");
+    }
+
+    _index++;
+}
+
+void ConfigParser::parseLocationMethods(RouteConfig& route) {
+    _index++;
+
+    if (isEnd(_tokens, _index) || _tokens[_index] == ";") {
+        throw ConfigParsingException("Expected methods after 'methods'");
+    }
+
+    while (!isEnd(_tokens, _index) && _tokens[_index] != ";") {
+        const HttpMethodType method = webserver::stringToMethod(_tokens[_index]);
+        route.addAllowedMethod(method);
+        _index++;
+    }
+
+    if (isEnd(_tokens, _index) || _tokens[_index] != ";") {
+        throw ConfigParsingException("Missing ';' after methods in location");
+    }
+
+    _index++;
+}
+
+void ConfigParser::parseLocationLimitExcept(RouteConfig& route) {
+    _index++;
+
+    if (isEnd(_tokens, _index) || _tokens[_index] == ";") {
+        throw ConfigParsingException("Expected methods after 'limit_except'");
+    }
+
+    while (!isEnd(_tokens, _index) && _tokens[_index] != ";") {
+        const HttpMethodType method = webserver::stringToMethod(_tokens[_index]);
+        route.addAllowedMethod(method);
+        _index++;
+    }
+
+    if (isEnd(_tokens, _index) || _tokens[_index] != ";") {
+        throw ConfigParsingException("Missing ';' after limit_except in location");
+    }
+
+    _index++;
+}
+
+void ConfigParser::parseLocationReturn(RouteConfig& route) {
+    _index++;
+
+    if (isEnd(_tokens, _index) || _tokens[_index] == ";") {
+        throw ConfigParsingException("Expected target after 'return' in location");
+    }
+
+    const string target = _tokens[_index];
+
+    _index++;
+
+    if (isEnd(_tokens, _index) || _tokens[_index] != ";") {
+        throw ConfigParsingException("Missing ';' after return in location");
+    }
+
+    _index++;
+
+    route.setRedirection(target);
+}
+
+void ConfigParser::parseLocationUpload() {
+    _index++;
+
+    if (isEnd(_tokens, _index) || _tokens[_index] == ";") {
+        throw ConfigParsingException("Expected on/off after upload");
+    }
+
+    const string enabled = _tokens[_index];
+
+    _index++;
+
+    if (enabled == "on") {
+        _tmp.setUploadEnabled(true);
+    } else if (enabled == "off") {
+        _tmp.setUploadEnabled(false);
+    } else {
+        throw ConfigParsingException("upload must be on/off");
+    }
+
+    if (isEnd(_tokens, _index)) {
+        throw ConfigParsingException("Expected upload path");
+    }
+
+    _tmp.setUploadRoot(_tokens[_index]);
+
+    _index++;
+
+    if (isEnd(_tokens, _index) || _tokens[_index] != ";") {
+        throw ConfigParsingException("Missing ';' after upload");
+    }
+
+    _index++;
+}
+
+void ConfigParser::parseLocationCgi(RouteConfig& route) {
+    _index++;
+
+    if (isEnd(_tokens, _index) || _tokens[_index] == ";") {
+        throw ConfigParsingException("Expected extension after 'cgi'");
+    }
+
+    string ext = _tokens[_index];
+
+    if (ext.empty() || ext[0] != '.') {
+        throw ConfigParsingException("Invalid CGI extension: " + ext);
+    }
+
+    _index++;
+
+    if (isEnd(_tokens, _index)) {
+        throw ConfigParsingException("Expected executable path after CGI extension");
+    }
+
+    const string execPath = _tokens[_index];
+
+    _index++;
+
+    if (isEnd(_tokens, _index) || _tokens[_index] != ";") {
+        throw ConfigParsingException("Missing ';' after cgi directive in location");
+    }
+
+    _index++;
+
+    const CgiHandlerConfig cfg(30, execPath);
+    route.addCgiHandler(cfg, ext);
+}
+}  // namespace webserver

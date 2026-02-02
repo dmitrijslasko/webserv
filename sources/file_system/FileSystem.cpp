@@ -1,0 +1,150 @@
+#include "FileSystem.hpp"
+
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+#include <stdexcept>
+#include <string>
+
+#include "file_system/MimeType.hpp"
+#include "http_status/HttpStatus.hpp"
+#include "response/Response.hpp"
+
+#define DEFAULT_BUFFER_SIZE 4096
+
+using std::string;
+using webserver::Response;
+
+namespace file_system {
+bool isFile(const char* path) {
+    struct stat stt;
+    if (stat(path, &stt) == -1) {
+        return (false);
+    }
+    return (S_ISREG(stt.st_mode));
+}
+
+bool isDirectory(const char* path) {
+    struct stat stt;
+    if (stat(path, &stt) == -1) {
+        return (false);
+    }
+    return (S_ISDIR(stt.st_mode));
+}
+
+bool fileExists(const char* path) {
+    struct stat fileStat;
+    if (stat(path, &fileStat) != 0) {
+        return (false);
+    }
+    const int fdr = open(path, O_RDONLY);
+    if (fdr < 0) {
+        return (false);
+    }
+    close(fdr);
+    return (true);
+}
+
+webserver::HttpStatus::CODE validateFile(const char* path) {
+    if (!fileExists(path)) {
+        return (webserver::HttpStatus::NOT_FOUND);
+    }
+    return (webserver::HttpStatus::OK);
+}
+
+long getFileSize(const char* path) {
+    struct stat fileStat;
+    if (stat(path, &fileStat) == 0) {
+        return (fileStat.st_size);
+    }
+    return (-1);
+}
+
+std::string readFile(const char* path) {
+    const int fileDescriptor = open(path, O_RDONLY);
+    if (fileDescriptor < 0) {
+        throw std::runtime_error("Failed to open file");
+    }
+
+    char buffer[DEFAULT_BUFFER_SIZE];
+    std::string result;
+
+    ssize_t bytes;
+    while ((bytes = read(fileDescriptor, buffer, sizeof(buffer))) > 0) {
+        result.append(buffer, bytes);
+    }
+    if (bytes < 0) {
+        throw std::runtime_error("Failed to read file");
+    }
+    close(fileDescriptor);
+
+    return (result);
+}
+
+std::string getFileExtension(const std::string& path) {
+    /* NOTE: 
+    If we find a dot (.) that is located before the last slash, it is part of a directory name, not the file extension
+    Example: dir/.config/file
+    Without the slash check we will end up with ".config/file" being our file extension, which is wrong.
+    With the slash check, we get "" as the extension, which is correct.
+    */
+    const std::string::size_type slash = path.find_last_of("/\\");
+    const std::string::size_type dot = path.find_last_of('.');
+
+    if (dot == std::string::npos || (slash != std::string::npos && dot < slash)) {
+        return ("");
+    }
+
+    return (path.substr(dot + 1));
+}
+
+bool isReadableFile(const char* path) {
+    if (!isFile(path)) {
+        return (false);
+    }
+    return (access(path, R_OK) == 0);
+}
+
+bool isExecutableFile(const char* path) {
+    if (!isFile(path)) {
+        return (false);
+    }
+    return (access(path, X_OK) == 0);
+}
+
+bool isWritableDirectory(const char* path) {
+    if (!isDirectory(path)) {
+        return (false);
+    }
+    return (access(path, W_OK) == 0);
+}
+
+bool canCreateDirectory(const char* path) {
+    const std::string pathStr(path);
+    const std::string::size_type lastSlash = pathStr.find_last_of("/\\");
+
+    if (lastSlash == std::string::npos) {
+        return (access(".", W_OK) == 0);
+    }
+
+    const std::string parent = pathStr.substr(0, lastSlash);
+    if (parent.empty()) {
+        return (access("/", W_OK) == 0);
+    }
+
+    return (isDirectory(parent.c_str()) && access(parent.c_str(), W_OK) == 0);
+}
+
+Response serveFile(const std::string& path, int statusCode, string reasonPhrase) {
+    const string ext = file_system::getFileExtension(path);
+    const Response resp(
+        statusCode,
+        reasonPhrase,
+        file_system::readFile(path.c_str()),
+        webserver::MimeType::getMimeType(ext)
+    );
+    return (resp);
+}
+
+}  // namespace file_system
