@@ -1,10 +1,10 @@
+.vscode
 /webserv
 build
-.vscode
 *.txt
 test
-*.pyc
 cxxtest
+*.pyc
 *.tst
 .fuse_hidden*
 /testRoot
@@ -12,5 +12,6 @@ cxxtest
 tests/e2e/webserv/tools/webserv
 tests/e2e/webserv/tools/status_pages
 tests/e2e/**/results*.json
+.github/workflows
 *.log
 *.log.*
